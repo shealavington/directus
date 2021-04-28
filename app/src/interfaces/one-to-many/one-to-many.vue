@@ -3,41 +3,47 @@
 		{{ $t('relationship_not_setup') }}
 	</v-notice>
 	<div class="one-to-many" v-else>
-		<v-table
-			:loading="loading"
-			:items="sortedItems || items"
-			:headers.sync="tableHeaders"
-			show-resize
-			inline
-			:sort.sync="sort"
-			@update:items="sortItems($event)"
-			@click:row="editItem"
-			:disabled="disabled"
-			:show-manual-sort="sortField !== null"
-			:manual-sort-key="sortField"
-		>
-			<template v-for="header in tableHeaders" v-slot:[`item.${header.value}`]="{ item }">
-				<render-display
-					:key="header.value"
-					:value="get(item, header.value)"
-					:display="header.field.display"
-					:options="header.field.displayOptions"
-					:interface="header.field.interface"
-					:interface-options="header.field.interfaceOptions"
-					:type="header.field.type"
-					:collection="relatedCollection.collection"
-					:field="header.field.field"
-				/>
-			</template>
+		<template v-if="loading">
+			<v-skeleton-loader
+				v-for="n in (value || []).length || 3"
+				:key="n"
+				:type="(value || []).length > 4 ? 'block-list-item-dense' : 'block-list-item'"
+			/>
+		</template>
 
-			<template #item-append="{ item }" v-show="!disabled">
-				<v-icon name="close" v-tooltip="$t('deselect')" class="deselect" @click.stop="deleteItem(item)" />
-			</template>
-		</v-table>
+		<v-notice v-else-if="sortedItems.length === 0">
+			{{ $t('no_items') }}
+		</v-notice>
+
+		<v-list v-else>
+			<draggable
+				:force-fallback="true"
+				:value="sortedItems"
+				@input="sortItems($event)"
+				handler=".drag-handle"
+				:disabled="!relation.sort_field"
+			>
+				<v-list-item
+					:dense="sortedItems.length > 4"
+					v-for="item in sortedItems"
+					:key="item.id"
+					block
+					:disabled="disabled || updateAllowed === false"
+					@click="editItem(item)"
+				>
+					<v-icon v-if="relation.sort_field" name="drag_handle" class="drag-handle" left @click.stop="() => {}" />
+					<render-template :collection="relation.many_collection" :item="item" :template="templateWithDefaults" />
+					<div class="spacer" />
+					<v-icon v-if="!disabled && updateAllowed" name="close" @click.stop="deleteItem(item)" />
+				</v-list-item>
+			</draggable>
+		</v-list>
 
 		<div class="actions" v-if="!disabled">
-			<v-button class="new" @click="currentlyEditing = '+'">{{ $t('create_new') }}</v-button>
-			<v-button class="existing" @click="selectModalActive = true">
+			<v-button v-if="enableCreate && createAllowed && updateAllowed" @click="currentlyEditing = '+'">
+				{{ $t('create_new') }}
+			</v-button>
+			<v-button v-if="enableSelect && updateAllowed" @click="selectModalActive = true">
 				{{ $t('add_existing') }}
 			</v-button>
 		</div>
@@ -48,6 +54,7 @@
 			:collection="relatedCollection.collection"
 			:primary-key="currentlyEditing || '+'"
 			:edits="editsAtStart"
+			:circular-field="relation.many_field"
 			@input="stageEdits"
 			@update:active="cancelEdit"
 		/>
@@ -68,17 +75,19 @@
 import { defineComponent, ref, computed, watch, PropType } from '@vue/composition-api';
 import api from '@/api';
 import useCollection from '@/composables/use-collection';
-import { useCollectionsStore, useRelationsStore, useFieldsStore } from '@/stores/';
+import { useCollectionsStore, useRelationsStore, useFieldsStore, usePermissionsStore, useUserStore } from '@/stores/';
 import DrawerItem from '@/views/private/components/drawer-item';
 import DrawerCollection from '@/views/private/components/drawer-collection';
 import { Filter, Field } from '@/types';
-import { Header, Sort } from '@/components/v-table/types';
 import { isEqual, sortBy } from 'lodash';
 import { get } from 'lodash';
 import { unexpectedError } from '@/utils/unexpected-error';
+import { getFieldsFromTemplate } from '@/utils/get-fields-from-template';
+import Draggable from 'vuedraggable';
+import adjustFieldsForDisplays from '@/utils/adjust-fields-for-displays';
 
 export default defineComponent({
-	components: { DrawerItem, DrawerCollection },
+	components: { DrawerItem, DrawerCollection, Draggable },
 	props: {
 		value: {
 			type: Array as PropType<(number | string | Record<string, any>)[] | null>,
@@ -96,11 +105,7 @@ export default defineComponent({
 			type: String,
 			required: true,
 		},
-		fields: {
-			type: Array as PropType<string[]>,
-			default: () => [],
-		},
-		sortField: {
+		template: {
 			type: String,
 			default: null,
 		},
@@ -108,21 +113,41 @@ export default defineComponent({
 			type: Boolean,
 			default: false,
 		},
+		enableCreate: {
+			type: Boolean,
+			default: true,
+		},
+		enableSelect: {
+			type: Boolean,
+			default: true,
+		},
 	},
 	setup(props, { emit }) {
 		const relationsStore = useRelationsStore();
 		const collectionsStore = useCollectionsStore();
 		const fieldsStore = useFieldsStore();
+		const permissionsStore = usePermissionsStore();
+		const userStore = useUserStore();
 
 		const { relation, relatedCollection, relatedPrimaryKeyField } = useRelation();
-		const { tableHeaders, items, loading } = useTable();
+
+		const templateWithDefaults = computed(
+			() => props.template || relatedCollection.value.meta?.display_template || `{{${relation.value.many_primary}}}`
+		);
+
+		const fields = computed(() =>
+			adjustFieldsForDisplays(getFieldsFromTemplate(templateWithDefaults.value), relatedCollection.value.collection)
+		);
+
+		const { items, loading } = usePreview();
 		const { currentlyEditing, editItem, editsAtStart, stageEdits, cancelEdit } = useEdits();
 		const { stageSelection, selectModalActive, selectionFilters } = useSelection();
 		const { sort, sortItems, sortedItems } = useSort();
 
+		const { createAllowed, updateAllowed } = usePermissions();
+
 		return {
 			relation,
-			tableHeaders,
 			loading,
 			currentlyEditing,
 			editItem,
@@ -139,16 +164,14 @@ export default defineComponent({
 			sort,
 			sortedItems,
 			get,
+			getItemFromIndex,
+			templateWithDefaults,
+			createAllowed,
+			updateAllowed,
 		};
 
-		function getItem(id: string | number) {
-			const pkField = relatedPrimaryKeyField.value.field;
-			if (props.value === null) return null;
-			return (
-				props.value.find(
-					(item) => (typeof item === 'object' && pkField in item && item[pkField] === id) || item === id
-				) || null
-			);
+		function getItemFromIndex(index: number) {
+			return (sortedItems.value || items.value)[index];
 		}
 
 		function getNewItems() {
@@ -167,12 +190,6 @@ export default defineComponent({
 				string,
 				any
 			>[];
-		}
-
-		function getExistingItems() {
-			if (props.value === null) return [];
-			const pkField = relatedPrimaryKeyField.value.field;
-			return props.value.filter((item) => typeof item === 'string' || typeof item === 'number');
 		}
 
 		function getPrimaryKeys() {
@@ -216,13 +233,13 @@ export default defineComponent({
 		}
 
 		function useSort() {
-			const sort = ref<Sort>({ by: props.sortField || props.fields[0], desc: false });
+			const sort = ref({ by: relation.value.sort_field || fields.value[0], desc: false });
 
 			function sortItems(newItems: Record<string, any>[]) {
-				if (props.sortField === null) return;
+				if (relation.value.sort_field === null) return;
 
 				const itemsSorted = newItems.map((item, i) => {
-					item[props.sortField] = i;
+					item[relation.value.sort_field] = i;
 					return item;
 				});
 
@@ -230,10 +247,10 @@ export default defineComponent({
 			}
 
 			const sortedItems = computed(() => {
-				if (props.sortField === null || sort.value.by !== props.sortField) return null;
+				if (relation.value.sort_field === null || sort.value.by !== relation.value.sort_field) return items.value;
 
 				const desc = sort.value.desc;
-				const sorted = sortBy(items.value, [props.sortField]);
+				const sorted = sortBy(items.value, [relation.value.sort_field]);
 				return desc ? sorted.reverse() : sorted;
 			});
 
@@ -258,26 +275,24 @@ export default defineComponent({
 			return { relation, relatedCollection, relatedPrimaryKeyField };
 		}
 
-		function useTable() {
-			// Using a ref for the table headers here means that the table itself can update the
-			// values if it needs to. This allows the user to manually resize the columns for example
-			const tableHeaders = ref<Header[]>([]);
+		function usePreview() {
 			const loading = ref(false);
 			const items = ref<Record<string, any>[]>([]);
 
 			watch(
 				() => props.value,
-				async (newVal) => {
+				async () => {
 					loading.value = true;
 					const pkField = relatedPrimaryKeyField.value.field;
 
-					const fields = [...(props.fields.length > 0 ? props.fields : getDefaultFields())];
+					const fieldsList = [...(fields.value.length > 0 ? fields.value : getDefaultFields())];
 
-					if (fields.includes(pkField) === false) {
-						fields.push(pkField);
+					if (fieldsList.includes(pkField) === false) {
+						fieldsList.push(pkField);
 					}
 
-					if (props.sortField !== null && fields.includes(props.sortField) === false) fields.push(props.sortField);
+					if (relation.value.sort_field !== null && fieldsList.includes(relation.value.sort_field) === false)
+						fieldsList.push(relation.value.sort_field);
 
 					try {
 						const endpoint = relatedCollection.value.collection.startsWith('directus_')
@@ -291,7 +306,7 @@ export default defineComponent({
 						if (primaryKeys && primaryKeys.length > 0) {
 							const response = await api.get(endpoint, {
 								params: {
-									fields: fields,
+									fields: fieldsList,
 									[`filter[${pkField}][_in]`]: primaryKeys.join(','),
 								},
 							});
@@ -325,41 +340,7 @@ export default defineComponent({
 				{ immediate: true }
 			);
 
-			// Seeing we don't care about saving those tableHeaders, we can reset it whenever the
-			// fields prop changes (most likely when we're navigating to a different o2m context)
-			watch(
-				() => props.fields,
-				() => {
-					tableHeaders.value = (props.fields.length > 0 ? props.fields : getDefaultFields())
-						.map((fieldKey) => {
-							const field = fieldsStore.getField(relatedCollection.value.collection, fieldKey);
-
-							if (!field) return null;
-
-							const header: Header = {
-								text: field.name,
-								value: fieldKey,
-								align: 'left',
-								sortable: true,
-								width: null,
-								field: {
-									display: field.meta?.display,
-									displayOptions: field.meta?.display_options,
-									interface: field.meta?.interface,
-									interfaceOptions: field.meta?.options,
-									type: field.type,
-									field: field.field,
-								},
-							};
-
-							return header;
-						})
-						.filter((h) => h) as Header[];
-				},
-				{ immediate: true }
-			);
-
-			return { tableHeaders, items, loading };
+			return { items, loading };
 		}
 
 		function useEdits() {
@@ -376,7 +357,11 @@ export default defineComponent({
 				const pkField = relatedPrimaryKeyField.value.field;
 				const hasPrimaryKey = pkField in item;
 
-				const edits = (props.value || []).find((edit: any) => edit === item);
+				const edits = (props.value || []).find(
+					(edit: any) =>
+						typeof edit === 'object' &&
+						edit[relatedPrimaryKeyField.value.field] === item[relatedPrimaryKeyField.value.field]
+				);
 
 				editsAtStart.value = edits || { [pkField]: item[pkField] || {} };
 				currentlyEditing.value = hasPrimaryKey ? item[pkField] : '+';
@@ -384,8 +369,6 @@ export default defineComponent({
 
 			function stageEdits(edits: any) {
 				const pkField = relatedPrimaryKeyField.value.field;
-
-				const hasPrimaryKey = pkField in edits;
 
 				const newValue = (props.value || []).map((item) => {
 					if (typeof item === 'object' && pkField in item && pkField in edits && item[pkField] === edits[pkField]) {
@@ -403,7 +386,7 @@ export default defineComponent({
 					return item;
 				});
 
-				if (hasPrimaryKey === false && newValue.includes(edits) === false) {
+				if (newValue.includes(edits) === false) {
 					newValue.push(edits);
 				}
 
@@ -447,8 +430,6 @@ export default defineComponent({
 			return { stageSelection, selectModalActive, selectionFilters };
 
 			function stageSelection(newSelection: (number | string)[]) {
-				const pkField = relatedPrimaryKeyField.value.field;
-
 				const selection = newSelection.filter((item) => selectedPrimaryKeys.value.includes(item) === false);
 
 				const newVal = [...selection, ...(props.value || [])];
@@ -462,17 +443,43 @@ export default defineComponent({
 			const fields = fieldsStore.getFieldsForCollection(relatedCollection.value.collection);
 			return fields.slice(0, 3).map((field: Field) => field.field);
 		}
+
+		function usePermissions() {
+			const createAllowed = computed(() => {
+				const admin = userStore.state?.currentUser?.role.admin_access === true;
+				if (admin) return true;
+
+				return !!permissionsStore.state.permissions.find(
+					(permission) => permission.action === 'create' && permission.collection === relatedCollection.value.collection
+				);
+			});
+
+			const updateAllowed = computed(() => {
+				const admin = userStore.state?.currentUser?.role.admin_access === true;
+				if (admin) return true;
+
+				return !!permissionsStore.state.permissions.find(
+					(permission) => permission.action === 'update' && permission.collection === relatedCollection.value.collection
+				);
+			});
+
+			return { createAllowed, updateAllowed };
+		}
 	},
 });
 </script>
 
 <style lang="scss" scoped>
-.actions {
-	margin-top: 12px;
+.v-list {
+	--v-list-padding: 0 0 4px;
 }
 
-.existing {
-	margin-left: 12px;
+.actions {
+	margin-top: 8px;
+
+	.v-button + .v-button {
+		margin-left: 8px;
+	}
 }
 
 .deselect {

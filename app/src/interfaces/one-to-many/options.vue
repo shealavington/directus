@@ -4,21 +4,26 @@
 	</v-notice>
 	<div v-else class="form-grid">
 		<div class="field full">
-			<p class="type-label">{{ $t('select_fields') }}</p>
-			<v-field-select
+			<p class="type-label">{{ $t('display_template') }}</p>
+			<v-field-template
+				v-model="template"
 				:collection="relatedCollection"
-				v-model="fields"
-				:inject="relatedCollectionExists ? null : { fields: newFields, collections: newCollections, relations }"
+				:depth="2"
+				:inject="!!relatedCollectionInfo ? null : { fields: newFields, collections: newCollections, relations }"
+				:placeholder="
+					relatedCollectionInfo && relatedCollectionInfo.meta && relatedCollectionInfo.meta.display_template
+				"
 			/>
 		</div>
-		<div class="field half">
-			<p class="type-label">{{ $t('sort_field') }}</p>
-			<interface-field
-				v-model="sortField"
-				:collection="relatedCollection"
-				:type-allow-list="['bigInteger', 'integer']"
-				allowNone
-			></interface-field>
+
+		<div class="field half-left">
+			<p class="type-label">{{ $t('creating_items') }}</p>
+			<v-checkbox block :label="$t('enable_create_button')" v-model="enableCreate" />
+		</div>
+
+		<div class="field half-right">
+			<p class="type-label">{{ $t('selecting_items') }}</p>
+			<v-checkbox block :label="$t('enable_select_button')" v-model="enableSelect" />
 		</div>
 	</div>
 </template>
@@ -26,7 +31,7 @@
 <script lang="ts">
 import { Field, Relation, Collection } from '@/types';
 import { defineComponent, PropType, computed } from '@vue/composition-api';
-import { useRelationsStore, useCollectionsStore } from '@/stores/';
+import { useCollectionsStore } from '@/stores/';
 
 export default defineComponent({
 	props: {
@@ -57,28 +62,39 @@ export default defineComponent({
 	},
 	setup(props, { emit }) {
 		const collectionsStore = useCollectionsStore();
-		const relationsStore = useRelationsStore();
 
-		const fields = computed({
+		const template = computed({
 			get() {
-				return props.value?.fields;
+				return props.value?.template;
 			},
-			set(newFields: string) {
+			set(newTemplate: string) {
 				emit('input', {
 					...(props.value || {}),
-					fields: newFields,
+					template: newTemplate,
 				});
 			},
 		});
 
-		const sortField = computed({
+		const enableCreate = computed({
 			get() {
-				return props.value?.sortField;
+				return props.value?.enableCreate ?? true;
 			},
-			set(newFields: string) {
+			set(val: boolean) {
 				emit('input', {
 					...(props.value || {}),
-					sortField: newFields,
+					enableCreate: val,
+				});
+			},
+		});
+
+		const enableSelect = computed({
+			get() {
+				return props.value?.enableSelect ?? true;
+			},
+			set(val: boolean) {
+				emit('input', {
+					...(props.value || {}),
+					enableSelect: val,
 				});
 			},
 		});
@@ -92,13 +108,12 @@ export default defineComponent({
 			return relatedRelation?.many_collection || null;
 		});
 
-		const relatedCollectionExists = computed(() => {
-			return !!collectionsStore.state.collections.find(
-				(collection) => collection.collection === relatedCollection.value
-			);
+		const relatedCollectionInfo = computed(() => {
+			if (!relatedCollection.value) return null;
+			return collectionsStore.getCollection(relatedCollection.value);
 		});
 
-		return { fields, sortField, relatedCollection, relatedCollectionExists };
+		return { template, enableCreate, enableSelect, relatedCollection, relatedCollectionInfo };
 	},
 });
 </script>
